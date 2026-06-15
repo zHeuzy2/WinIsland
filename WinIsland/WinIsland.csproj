@@ -20,8 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Copied next to the exe so the tray icon can load it at runtime. -->
-    <Content Include="logo.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Copied next to the exe at build and publish time. -->
+    <Content Include="logo.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

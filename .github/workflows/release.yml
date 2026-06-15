@@ -1,0 +1,84 @@
+name: Release
+
+# Triggered by a version tag: git tag v1.2.3 && git push origin v1.2.3
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write   # needed to create a GitHub Release
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. .NET 8 ──────────────────────────────────────────────────────────
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # ── 3. Strip the leading "v" from the tag (v1.2.3 → 1.2.3) ────────────
+      - name: Set version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v', ''
+          echo "VERSION=$v" >> $env:GITHUB_OUTPUT
+
+      # ── 4. Publish (self-contained, trimmed, single-folder) ────────────────
+      - name: Publish
+        shell: pwsh
+        run: |
+          dotnet publish WinIsland/WinIsland.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=false `
+            -p:PublishTrimmed=false `
+            -p:AssemblyVersion=${{ steps.ver.outputs.VERSION }} `
+            -p:FileVersion=${{ steps.ver.outputs.VERSION }} `
+            -p:InformationalVersion=${{ steps.ver.outputs.VERSION }} `
+            -o publish/WinIsland
+
+      # ── 5. Zip portable build ──────────────────────────────────────────────
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          $dest = "dist"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Compress-Archive -Path "publish/WinIsland/*" `
+            -DestinationPath "$dest/WinIsland-${{ steps.ver.outputs.VERSION }}-portable.zip"
+
+      # ── 6. Build installer with Inno Setup ────────────────────────────────
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.VERSION }}
+          BUILD_DIR:   ${{ github.workspace }}\publish\WinIsland
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc installer\WinIsland.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # ── 7. Create GitHub Release and upload assets ─────────────────────────
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "WinIsland ${{ steps.ver.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/WinIsland-${{ steps.ver.outputs.VERSION }}-Setup.exe
+            dist/WinIsland-${{ steps.ver.outputs.VERSION }}-portable.zip
