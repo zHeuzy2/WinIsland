@@ -101,6 +101,10 @@ internal static class Native
     // Callback message for the system tray icon.
     public const uint WM_TRAYICON = 0x8000 + 2; // WM_APP + 2
 
+    // Posted by the updater (from a background task) to ask the UI thread to
+    // tear the window down and quit so the installer can replace the files.
+    public const uint WM_APP_QUIT = 0x8000 + 3; // WM_APP + 3
+
     public const uint WM_NULL = 0x0000;
     public const uint WM_RBUTTONUP = 0x0205;
     public const uint WM_LBUTTONDBLCLK = 0x0203;
@@ -108,6 +112,7 @@ internal static class Native
 
     // Menu command ids handled inline (TPM_RETURNCMD).
     public const uint ID_TRAY_EXIT = 1;
+    public const uint ID_TRAY_UPDATE = 2;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X; public int Y; }

@@ -24,10 +24,11 @@ SolidCompression=yes
 WizardStyle=modern
 ; Require Windows 10 2004+
 MinVersion=10.0.19041
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
-; Request elevation (writes to Program Files)
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+; Require elevation (writes to Program Files)
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\{#AppExeName}
 
 [Languages]
@@ -46,16 +47,18 @@ Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExeName}"; Tasks: not s
 
 [Registry]
 ; Optional Windows startup entry (only when the user ticks the task)
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
   ValueType: string; ValueName: "{#AppName}"; \
   ValueData: """{app}\{#AppExeName}"""; \
   Flags: uninsdeletevalue; Tasks: startup
 
 [Run]
+; Relaunch after install. Shows as a checkbox in interactive mode and also runs
+; after a silent in-app update (no skipifsilent) so the updated app comes back.
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; \
-  Flags: nowait postinstall skipifsilent shellexec
+  Flags: nowait postinstall shellexec
 
 [UninstallRun]
 ; Kill the running instance before uninstalling so files aren't locked.
 Filename: "taskkill.exe"; Parameters: "/f /im {#AppExeName}"; \
-  Flags: runhidden skipifdoesntexist
+  Flags: runhidden skipifdoesntexist; RunOnceId: "KillApp"

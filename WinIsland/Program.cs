@@ -30,6 +30,13 @@ internal sealed class IslandApp : IIslandActions
     private PomodoroTimer _timer = null!;
     private NotificationService _notifications = null!;
     private CameraService _camera = null!;
+    private UpdateService _updates = null!;
+
+    // GitHub update state. _pendingUpdate is set from a background task and read
+    // on the UI thread when building the tray menu; _updating guards against
+    // kicking off a second download while one is in flight.
+    private volatile UpdateService.UpdateInfo? _pendingUpdate;
+    private volatile bool _updating;
 
     private readonly Spring _sw = new(220, 24);
     private readonly Spring _sh = new(220, 24);
@@ -91,6 +98,7 @@ internal sealed class IslandApp : IIslandActions
         _timer = new PomodoroTimer(_state, notify);
         _notifications = new NotificationService(_state, notify);
         _camera = new CameraService(_state, notify);
+        _updates = new UpdateService();
 
         BuildSurface();
         ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
@@ -99,6 +107,10 @@ internal sealed class IslandApp : IIslandActions
 
         _media.Start();
         _notifications.Start();
+
+        // Look for a newer GitHub release shortly after launch, without blocking
+        // startup. A hit shows an alert and enables the tray "Install" item.
+        _ = CheckForUpdatesAsync(announce: true);
 
         RunLoop();
 
@@ -147,6 +159,19 @@ internal sealed class IslandApp : IIslandActions
         if (menu == IntPtr.Zero) return;
         try
         {
+            // Offer the update action first when one is queued, otherwise a
+            // manual "check for updates" entry.
+            var pending = _pendingUpdate;
+            if (pending != null)
+            {
+                AppendMenu(menu, MF_STRING, (UIntPtr)ID_TRAY_UPDATE,
+                    string.Format(Loc.T("tray.installupdate"), "v" + pending.Version));
+            }
+            else
+            {
+                AppendMenu(menu, MF_STRING, (UIntPtr)ID_TRAY_UPDATE, Loc.T("tray.checkupdate"));
+            }
+            AppendMenu(menu, MF_SEPARATOR, UIntPtr.Zero, string.Empty);
             AppendMenu(menu, MF_STRING, (UIntPtr)ID_TRAY_EXIT, Loc.T("tray.exit"));
 
             // The menu needs a foreground window to dismiss correctly when the
@@ -158,8 +183,92 @@ internal sealed class IslandApp : IIslandActions
             PostMessage(_hwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
 
             if (cmd == ID_TRAY_EXIT) DestroyWindow(_hwnd);
+            else if (cmd == ID_TRAY_UPDATE) OnTrayUpdateClicked();
         }
         finally { DestroyMenu(menu); }
+    }
+
+    // ---- GitHub updates ----
+
+    /// <summary>
+    /// Checks the latest GitHub release in the background. When a newer version
+    /// is found it's stored for the tray menu; <paramref name="announce"/> also
+    /// flashes an alert on the island. When nothing new is found and
+    /// <paramref name="announce"/> is false (a manual check), it reports that the
+    /// app is up to date.
+    /// </summary>
+    private async Task CheckForUpdatesAsync(bool announce)
+    {
+        try
+        {
+            var info = await _updates.CheckAsync();
+            if (info != null)
+            {
+                _pendingUpdate = info;
+                ShowAlert("\uE777", Loc.T("update.available.title"),
+                    string.Format(Loc.T("update.available.sub"), "v" + info.Version), 7000);
+            }
+            else if (!announce)
+            {
+                ShowAlert("\uE73E", Loc.T("update.uptodate"), null, 4000);
+            }
+        }
+        catch { /* never crash the app over an update check */ }
+    }
+
+    /// <summary>Handles the tray "check / install update" entry.</summary>
+    private void OnTrayUpdateClicked()
+    {
+        if (_pendingUpdate is { } update)
+        {
+            if (_updating) return;
+            _updating = true;
+            _ = DownloadAndInstallAsync(update);
+        }
+        else
+        {
+            ShowAlert("\uE895", Loc.T("update.checking"), null, 3000);
+            _ = CheckForUpdatesAsync(announce: false);
+        }
+    }
+
+    /// <summary>
+    /// Downloads the installer and launches it, then quits so the upgrade can
+    /// replace the running files.
+    /// </summary>
+    private async Task DownloadAndInstallAsync(UpdateService.UpdateInfo update)
+    {
+        try
+        {
+            ShowAlert("\uE896", Loc.T("update.downloading"), "v" + update.Version, 60000);
+            string installer = await _updates.DownloadAsync(update);
+
+            ShowAlert("\uE777", string.Format(Loc.T("update.ready"), "v" + update.Version), null, 5000);
+            UpdateService.LaunchInstaller(installer);
+
+            // Give the alert a beat to paint, then exit so files unlock.
+            await Task.Delay(800);
+            PostMessage(_hwnd, WM_APP_QUIT, IntPtr.Zero, IntPtr.Zero);
+        }
+        catch
+        {
+            _updating = false;
+            ShowAlert("\uEA39", Loc.T("update.failed"), null, 5000);
+        }
+    }
+
+    /// <summary>Queues a transient island alert and requests a repaint. Thread-safe.</summary>
+    private void ShowAlert(string icon, string title, string? subtitle, int durationMs)
+    {
+        _state.SetAlert(new AlertInfo
+        {
+            Icon = icon,
+            Title = title,
+            Subtitle = subtitle,
+            Accent = (SkiaSharp.SKColor)(uint)_state.Settings.AccentArgb,
+        }, durationMs);
+        _needsRender = true;
+        PostMessage(_hwnd, WM_APP_UPDATE, IntPtr.Zero, IntPtr.Zero);
     }
 
     private void BuildSurface()
@@ -372,6 +481,10 @@ internal sealed class IslandApp : IIslandActions
 
             case WM_APP_UPDATE:
                 _needsRender = true;
+                return IntPtr.Zero;
+
+            case WM_APP_QUIT:
+                DestroyWindow(hWnd);
                 return IntPtr.Zero;
 
             case WM_TRAYICON:

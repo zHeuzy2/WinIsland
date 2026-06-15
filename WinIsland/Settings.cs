@@ -170,6 +170,15 @@ public static class Loc
         ["pos.Center"] = "Centro",
         ["pos.Right"] = "Direita",
         ["tray.exit"] = "Sair",
+        ["tray.checkupdate"] = "Verificar atualizações",
+        ["tray.installupdate"] = "Instalar atualização {0}",
+        ["update.available.title"] = "Atualização disponível",
+        ["update.available.sub"] = "Versão {0} — clique com o botão direito no ícone",
+        ["update.checking"] = "Procurando atualizações…",
+        ["update.uptodate"] = "Você já está na versão mais recente",
+        ["update.downloading"] = "Baixando atualização…",
+        ["update.failed"] = "Falha ao atualizar",
+        ["update.ready"] = "Instalando atualização {0}…",
     };
 
     private static readonly Dictionary<string, string> En = new()
@@ -215,5 +224,14 @@ public static class Loc
         ["pos.Center"] = "Center",
         ["pos.Right"] = "Right",
         ["tray.exit"] = "Exit",
+        ["tray.checkupdate"] = "Check for updates",
+        ["tray.installupdate"] = "Install update {0}",
+        ["update.available.title"] = "Update available",
+        ["update.available.sub"] = "Version {0} — right-click the tray icon",
+        ["update.checking"] = "Checking for updates…",
+        ["update.uptodate"] = "You're on the latest version",
+        ["update.downloading"] = "Downloading update…",
+        ["update.failed"] = "Update failed",
+        ["update.ready"] = "Installing update {0}…",
     };
 }
