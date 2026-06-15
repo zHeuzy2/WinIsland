@@ -12,6 +12,7 @@ x86/
 build/
 bld/
 dist/
+publish/
 *.zip
 
 # .NET
@@ -40,4 +41,9 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
-build-release.ps1
+
+# Misc
+*.log
+*.cache
+TestResults/
+.kiro/

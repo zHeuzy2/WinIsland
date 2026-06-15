@@ -22,15 +22,34 @@ no WinForms/WPF), with GPU rendering and a focus on being lightweight.
 - 🎨 **Customization** — screen position (left/center/right), accent color,
   language (Portuguese/English), and which tabs are visible.
 - 🖱️ **Tray icon** — a system tray icon with a right-click menu to quit the app.
+- ⬆️ **Auto-update** — checks GitHub Releases on launch and installs new versions
+  from the tray icon.
 
 ## 🚀 Getting started
 
-### Prerequisites
+### Download
+
+The easiest way is to grab the latest build from the
+[**Releases**](https://github.com/zHeuzy/WinIsland/releases) page:
+
+- **`WinIsland-x.y.z-Setup.exe`** — the installer (recommended). It sets up
+  WinIsland, optional Windows startup, and shortcuts.
+- **`WinIsland-x.y.z-portable.zip`** — a portable build. Unzip anywhere and run
+  `WinIsland.exe`.
+
+Once installed, WinIsland checks the Releases page on launch and lets you update
+straight from the tray icon when a new version is available.
+
+### Build it yourself
+
+Prefer to build from source? You have two options.
+
+#### Prerequisites
 
 - Windows 10 version 19041 (2004) or later
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 
-### Build and run
+#### Run from source
 
 ```bash
 cd WinIsland
@@ -44,6 +63,18 @@ dotnet build -c Release
 ```
 
 The binary lands in `WinIsland/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64/`.
+
+#### Build a full release (installer + portable zip)
+
+`build-release.ps1` produces the same artifacts published on the Releases page.
+It needs [Inno Setup 6](https://jrsoftware.org/isdl.php) installed.
+
+```powershell
+./build-release.ps1 1.0.1
+```
+
+This stamps the version into the build and writes
+`dist\WinIsland-1.0.1-Setup.exe` and `dist\WinIsland-1.0.1-portable.zip`.
 
 To quit the app, right-click the WinIsland icon in the system tray and choose
 **Exit**.
