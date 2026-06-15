@@ -11,6 +11,8 @@ x86/
 [Aa][Rr][Mm]64/
 build/
 bld/
+dist/
+*.zip
 
 # .NET
 *.user
