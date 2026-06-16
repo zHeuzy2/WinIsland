@@ -19,6 +19,14 @@ public sealed class MediaSnapshot
     public long PosTicks; // UtcNow ticks when Position was sampled
 }
 
+public sealed class WeatherSnapshot
+{
+    public bool HasData;
+    public double TempC;
+    public int WeatherCode; // WMO weather interpretation code
+    public string City = "";
+}
+
 public sealed class AlertInfo
 {
     public string Icon = "";
@@ -26,6 +34,8 @@ public sealed class AlertInfo
     public string? Subtitle;
     public SKColor Accent = new(10, 132, 255);
     public SKImage? Image; // optional artwork shown instead of the glyph
+    /// <summary>When set (0..1), a progress bar replaces the subtitle line.</summary>
+    public float? Progress;
 }
 
 /// <summary>
@@ -36,11 +46,38 @@ public sealed class AlertInfo
 public sealed class AppState
 {
     public volatile MediaSnapshot Media = new();
+    public volatile WeatherSnapshot Weather = new();
 
     // Interaction
     public volatile bool Hovered;
     public volatile bool Pinned;
+    public volatile bool ClickExpanded; // used when ExpandMode == Click
     public ViewKind View = ViewKind.Music;
+
+    // Transient "pinned mode" toast shown over the expanded panel after toggling
+    // the pin via double-click. PinToastExpiryTicks == 0 means no toast.
+    public long PinToastExpiryTicks;
+    public bool PinToastPinned; // which message: true = pinned, false = unpinned
+
+    public bool PinToastActive =>
+        PinToastExpiryTicks != 0 && DateTime.UtcNow.Ticks <= PinToastExpiryTicks;
+
+    /// <summary>Schedules the pin toast to show for the given duration.</summary>
+    public void ShowPinToast(bool pinned, int durationMs)
+    {
+        PinToastPinned = pinned;
+        PinToastExpiryTicks = DateTime.UtcNow.Ticks + TimeSpan.FromMilliseconds(durationMs).Ticks;
+    }
+
+    // Settings panel scroll offset (in logical pixels, applied as canvas translate).
+    public float SettingsScroll;
+
+    /// <summary>
+    /// Whether the island body should be expanded, taking into account the
+    /// configured expand mode (hover vs click), pin state and the composer.
+    /// </summary>
+    public bool IsExpanded(ExpandMode mode) =>
+        (mode == ExpandMode.Hover ? Hovered : ClickExpanded) || Pinned || Composer.Active;
 
     // Persisted user settings (loaded at startup, mutated on the UI thread).
     public AppSettings Settings = new();

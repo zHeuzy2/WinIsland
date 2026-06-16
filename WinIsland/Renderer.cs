@@ -45,6 +45,11 @@ public interface IIslandActions
     void ComposerToggleTime();
     void ComposerAdjustHour(int delta);
     void ComposerAdjustMinute(int delta);
+    void SetExpandMode(ExpandMode mode);
+    void SetStartWithWindows(bool enabled);
+    void ToggleAlert(AlertKind kind);
+    void TogglePin();
+    void ScrollSettings(float delta);
 }
 
 /// <summary>Draws the whole island with SkiaSharp based on AppState.</summary>
@@ -59,6 +64,15 @@ public sealed class Renderer
 
     // Wall-clock seconds from the render loop, used to blink the composer caret.
     private double _caretClock;
+
+    // Largest settings scroll offset (logical px); recomputed each render so the
+    // wheel handler and the renderer clamp the offset consistently.
+    private float _settingsMaxScroll;
+    public float SettingsMaxScroll => _settingsMaxScroll;
+
+    // When set, AddRegion drops hit regions whose center falls outside this band
+    // (used so scrolled-off settings rows aren't clickable).
+    private SKRect? _regionClip;
 
     public Renderer(AppState state, IIslandActions actions)
     {
@@ -119,7 +133,7 @@ public sealed class Renderer
         if (smallAlpha > 0.01f)
         {
             if (alert != null) DrawAlert(canvas, rect, smallAlpha, alert, scale);
-            else DrawCompact(canvas, rect, smallAlpha, scale, timeSec);
+            else DrawCompact(canvas, rect, smallAlpha, scale, radius, timeSec);
         }
 
         if (expAlpha > 0.01f)
@@ -165,7 +179,7 @@ public sealed class Renderer
     }
 
     // ---- Compact ----
-    private void DrawCompact(SKCanvas c, SKRect rect, float alpha, float scale, double timeSec)
+    private void DrawCompact(SKCanvas c, SKRect rect, float alpha, float scale, float radius, double timeSec)
     {
         byte a = (byte)(alpha * 255);
         var media = _state.Media;
@@ -235,22 +249,78 @@ public sealed class Renderer
             float titleMax = (rightEdge - rightBlockW - 10 * scale) - left;
             string title = Truncate(media.Title, _text, 13 * scale, Math.Max(40 * scale, titleMax));
             Text(c, title, left, midY + 4.5f * scale, _text, 13 * scale, new SKColor(245, 245, 247, a));
+
+            // Thin progress line hugging the bottom edge (clipped to the rounded
+            // corners). Advances while playing, freezes when paused.
+            if (media.DurationSec > 0)
+            {
+                float prog = Clamp01((float)(ComputeElapsed(media) / media.DurationSec));
+                float bh = 2f * scale;
+                var barRect = new SKRect(rect.Left, rect.Bottom - bh, rect.Right, rect.Bottom);
+                c.Save();
+                c.ClipRoundRect(new SKRoundRect(rect, radius, radius), antialias: true);
+                using (var track = new SKPaint { IsAntialias = true, Color = new SKColor(255, 255, 255, (byte)(a * 0.10f)) })
+                    c.DrawRect(barRect, track);
+                if (prog > 0)
+                {
+                    var fill = new SKRect(rect.Left, rect.Bottom - bh, rect.Left + rect.Width * prog, rect.Bottom);
+                    using var fp = new SKPaint { IsAntialias = true, Color = Accent.WithAlpha(a) };
+                    c.DrawRect(fill, fp);
+                }
+                c.Restore();
+            }
             return;
         }
 
-        // Idle: clock + dot
-        using (var dot = new SKPaint { IsAntialias = true, Color = new SKColor(52, 199, 89, a) })
+        // Idle: weather + clock (falls back to clock-only until weather loads).
+        string clock = DateTime.Now.ToString("HH:mm");
+        var weather = _state.Weather;
+        float baseY = rect.MidY + 4.5f * scale;
+        var fg = new SKColor(245, 245, 247, a);
+
+        if (weather.HasData)
         {
-            string clock = DateTime.Now.ToString("HH:mm");
-            float tw = Measure(clock, _textBold, 13 * scale);
-            float dotR = 4f * scale;
-            float total = dotR * 2 + 9 * scale + tw;
+            string glyph = WeatherGlyph(weather.WeatherCode);
+            string temp = $"{Math.Round(weather.TempC)}\u00b0";
+            float iconSize = 14 * scale;
+            float textSize = 13 * scale;
+            float gap = 7 * scale;
+            float iconW = Measure(glyph, _icons, iconSize);
+            float tempW = Measure(temp, _textBold, textSize);
+            float clockW = Measure(clock, _textBold, textSize);
+            float total = iconW + gap + tempW + gap + clockW;
             float x = rect.MidX - total / 2f;
-            c.DrawCircle(x + dotR, rect.MidY, dotR, dot);
-            Text(c, clock, x + dotR * 2 + 9 * scale, rect.MidY + 4.5f * scale, _textBold, 13 * scale,
-                new SKColor(245, 245, 247, a));
+
+            Text(c, glyph, x, baseY, _icons, iconSize, Accent.WithAlpha(a));
+            x += iconW + gap;
+            Text(c, temp, x, baseY, _textBold, textSize, fg);
+            x += tempW + gap;
+            Text(c, clock, x, baseY, _textBold, textSize, fg);
+        }
+        else
+        {
+            Text(c, clock, rect.MidX, baseY, _textBold, 13 * scale, fg, SKTextAlign.Center);
         }
     }
+
+    /// <summary>
+    /// Maps a WMO weather interpretation code to an icon-font glyph. Uses only
+    /// glyphs that render well in both Segoe MDL2 (Win10) and Segoe Fluent
+    /// (Win11): sun (E706), cloud (E753), rain drop (EB42), lightning (E945).
+    /// There is no good snowflake in MDL2, so snow/fog fall back to the cloud.
+    /// </summary>
+    private static string WeatherGlyph(int code) => code switch
+    {
+        0 => "\uE706",                         // clear sky -> sun
+        1 or 2 or 3 => "\uE753",               // mainly clear/partly/overcast -> cloud
+        45 or 48 => "\uE753",                  // fog -> cloud
+        >= 51 and <= 67 => "\uEB42",           // drizzle/rain -> drop
+        >= 71 and <= 77 => "\uE753",           // snow -> cloud (no snowflake glyph)
+        >= 80 and <= 82 => "\uEB42",           // rain showers -> drop
+        85 or 86 => "\uE753",                  // snow showers -> cloud
+        >= 95 => "\uE945",                     // thunderstorm -> lightning
+        _ => "\uE753",                         // default -> cloud
+    };
 
     /// <summary>
     /// Live-computed song position from the last GSMTC sample. Interpolated while
@@ -291,7 +361,32 @@ public sealed class Renderer
         }
 
         float tx = left + iconBox + 11 * scale;
+        bool hasProgress = alert.Progress.HasValue;
         bool hasSub = !string.IsNullOrEmpty(alert.Subtitle);
+
+        if (hasProgress)
+        {
+            // HUD style (volume / brightness): title on top, a progress bar below.
+            Text(c, alert.Title, tx, rect.MidY - 3 * scale, _textBold, 13 * scale,
+                new SKColor(245, 245, 247, a));
+
+            float barLeft = tx;
+            float barRight = rect.Right - pad;
+            float barY = rect.MidY + 11 * scale;
+            float bh = 5 * scale;
+            var track = new SKRect(barLeft, barY - bh / 2, barRight, barY + bh / 2);
+            using (var tp = new SKPaint { IsAntialias = true, Color = new SKColor(255, 255, 255, (byte)(a * 0.18f)) })
+                c.DrawRoundRect(track, bh / 2, bh / 2, tp);
+            float prog = Clamp01(alert.Progress!.Value);
+            if (prog > 0)
+            {
+                var fill = new SKRect(barLeft, barY - bh / 2, barLeft + (barRight - barLeft) * prog, barY + bh / 2);
+                using var fp = new SKPaint { IsAntialias = true, Color = alert.Accent.WithAlpha(a) };
+                c.DrawRoundRect(fill, bh / 2, bh / 2, fp);
+            }
+            return;
+        }
+
         float titleY = hasSub ? rect.MidY - 1 * scale : rect.MidY + 5 * scale;
         string title = Truncate(alert.Title, _textBold, 13 * scale, 230 * scale);
         Text(c, title, tx, titleY, _textBold, 13 * scale, new SKColor(245, 245, 247, a));
@@ -324,6 +419,54 @@ public sealed class Renderer
         DrawNav(c, rect, navH, a, scale, regions, winX, winY, interactive);
 
         if (_state.View == ViewKind.Music) DrawMusicControls(c, bodyRect, a, scale, regions, winX, winY, interactive);
+
+        DrawPinToast(c, rect, scale);
+    }
+
+    /// <summary>
+    /// Floating "pinned mode" toast shown briefly at the top-center of the
+    /// expanded panel after toggling the pin via double-click. Fades in, holds,
+    /// then fades out on its own; purely informative (no hit region).
+    /// </summary>
+    private void DrawPinToast(SKCanvas c, SKRect rect, float scale)
+    {
+        if (_state.PinToastExpiryTicks == 0) return;
+        long remaining = _state.PinToastExpiryTicks - DateTime.UtcNow.Ticks;
+        if (remaining <= 0) return;
+
+        // Envelope: fade-in over the first 160ms, fade-out over the last 280ms.
+        const float totalMs = 1400f, fadeInMs = 160f, fadeOutMs = 280f;
+        float elapsedMs = totalMs - (float)(remaining / TimeSpan.TicksPerMillisecond);
+        float fade = 1f;
+        if (elapsedMs < fadeInMs) fade = elapsedMs / fadeInMs;
+        else if (remaining < fadeOutMs * TimeSpan.TicksPerMillisecond)
+            fade = (float)(remaining / TimeSpan.TicksPerMillisecond) / fadeOutMs;
+        fade = Clamp01(fade);
+        if (fade <= 0.01f) return;
+        byte a = (byte)(fade * 255);
+
+        string label = Loc.T(_state.PinToastPinned ? "pin.toast.on" : "pin.toast.off");
+        const string icon = "\uE718"; // Pin glyph
+        float fontSize = 12 * scale;
+        float iconSize = 11 * scale;
+        float gap = 6 * scale;
+        float iconW = Measure(icon, _icons, iconSize);
+        float textW = Measure(label, _textBold, fontSize);
+        float padX = 12 * scale, h = 26 * scale;
+        float contentW = iconW + gap + textW;
+        float chipW = contentW + padX * 2;
+        float cx = rect.MidX;
+        float top = rect.Top + 8 * scale;
+        var chip = new SKRect(cx - chipW / 2, top, cx + chipW / 2, top + h);
+
+        using (var bg = new SKPaint { IsAntialias = true, Color = new SKColor(20, 20, 22, (byte)(a * 0.92f)) })
+            c.DrawRoundRect(chip, h / 2, h / 2, bg);
+
+        float midY = chip.MidY;
+        float left = chip.Left + padX;
+        Text(c, icon, left, midY + 4 * scale, _icons, iconSize, Accent.WithAlpha(a));
+        Text(c, label, left + iconW + gap, midY + 4 * scale, _textBold, fontSize,
+            new SKColor(245, 245, 247, a));
     }
 
     private void DrawMusic(SKCanvas c, SKRect rect, byte a, float scale,
@@ -845,7 +988,19 @@ public sealed class Renderer
     {
         float padX = 18 * scale;
         var labelColor = new SKColor(255, 255, 255, (byte)(a * 0.55f));
-        float y = rect.Top + 22 * scale;
+
+        // Clamp the live scroll offset to what the previous frame measured, then
+        // draw the whole list translated by it, clipped to the body.
+        float scroll = Math.Clamp(_state.SettingsScroll, 0f, _settingsMaxScroll);
+        _state.SettingsScroll = scroll;
+
+        var clip = new SKRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
+        c.Save();
+        c.ClipRect(clip);
+        _regionClip = clip;
+
+        float startY = rect.Top + 22 * scale;
+        float y = startY - scroll;
 
         // Screen position
         Text(c, Loc.T("settings.position"), rect.Left + padX, y, _text, 11.5f * scale, labelColor);
@@ -882,6 +1037,37 @@ public sealed class Renderer
             i => _state.Settings.EnabledTabs.Contains(toggleable[i]),
             i => _actions.ToggleTab(toggleable[i]));
 
+        // Expand mode (click vs hover)
+        y += 16 * scale;
+        Text(c, Loc.T("settings.expandmode"), rect.Left + padX, y, _text, 11.5f * scale, labelColor);
+        y += 12 * scale;
+        var modes = new[] { ExpandMode.Click, ExpandMode.Hover };
+        var modeLabels = new[] { Loc.T("expandmode.Click"), Loc.T("expandmode.Hover") };
+        y = DrawChipRow(c, rect, y, a, scale, regions, winX, winY, interactive, modeLabels,
+            i => modes[i] == _state.Settings.ExpandMode, i => _actions.SetExpandMode(modes[i]));
+
+        // Start with Windows
+        y += 16 * scale;
+        Text(c, Loc.T("settings.startup"), rect.Left + padX, y, _text, 11.5f * scale, labelColor);
+        y += 12 * scale;
+        var onoff = new[] { Loc.T("common.on"), Loc.T("common.off") };
+        y = DrawChipRow(c, rect, y, a, scale, regions, winX, winY, interactive, onoff,
+            i => (i == 0) == _state.Settings.StartWithWindows,
+            i => _actions.SetStartWithWindows(i == 0));
+
+        // Active alerts (each can be silenced)
+        y += 16 * scale;
+        Text(c, Loc.T("settings.alerts"), rect.Left + padX, y, _text, 11.5f * scale, labelColor);
+        y += 12 * scale;
+        var kinds = new[] { AlertKind.Volume, AlertKind.Brightness, AlertKind.Battery, AlertKind.Connection };
+        var kindLabels = new[]
+        {
+            Loc.T("alert.volume"), Loc.T("alert.brightness"),
+            Loc.T("alert.battery"), Loc.T("alert.connection"),
+        };
+        y = DrawChipRow(c, rect, y, a, scale, regions, winX, winY, interactive, kindLabels,
+            i => IsAlertOn(kinds[i]), i => _actions.ToggleAlert(kinds[i]));
+
         // Test notification button (full-width). Lets the user preview how an
         // incoming notification looks on the collapsed island.
         y += 16 * scale;
@@ -897,7 +1083,42 @@ public sealed class Renderer
         Text(c, label, blockX + iconW + 7 * scale, testBtn.MidY + 4.5f * scale, _text, 12.5f * scale,
             new SKColor(245, 245, 247, a));
         AddRegion(regions, testBtn, winX, winY, interactive, () => _actions.TestNotification());
+
+        // Measure the natural content height to bound scrolling next frame.
+        float naturalBottom = (y + btnH) + scroll;
+        float bottomPad = 12 * scale;
+        _settingsMaxScroll = Math.Max(0f, naturalBottom + bottomPad - rect.Bottom);
+
+        _regionClip = null;
+        c.Restore();
+
+        // Slim scroll indicator on the right edge (non-interactive).
+        if (_settingsMaxScroll > 0.5f)
+        {
+            float trackTop = rect.Top + 30 * scale;
+            float trackBottom = rect.Bottom - 8 * scale;
+            float trackH = trackBottom - trackTop;
+            float visible = rect.Height;
+            float content = visible + _settingsMaxScroll;
+            float thumbH = Math.Max(22 * scale, trackH * visible / content);
+            float tprog = scroll / _settingsMaxScroll;
+            float thumbY = trackTop + (trackH - thumbH) * tprog;
+            float sx = rect.Right - 6 * scale;
+            using var tp = new SKPaint { IsAntialias = true, Color = new SKColor(255, 255, 255, (byte)(a * 0.22f)) };
+            c.DrawRoundRect(new SKRect(sx - 1.5f * scale, thumbY, sx + 1.5f * scale, thumbY + thumbH),
+                1.5f * scale, 1.5f * scale, tp);
+        }
     }
+
+    /// <summary>Whether the given system-alert category is currently enabled.</summary>
+    private bool IsAlertOn(AlertKind kind) => kind switch
+    {
+        AlertKind.Volume => _state.Settings.AlertVolume,
+        AlertKind.Brightness => _state.Settings.AlertBrightness,
+        AlertKind.Battery => _state.Settings.AlertBattery,
+        AlertKind.Connection => _state.Settings.AlertConnection,
+        _ => true,
+    };
 
     /// <summary>Draws a left-aligned row of selectable color swatches.</summary>
     private float DrawColorRow(SKCanvas c, SKRect rect, float y, byte a, float scale,
@@ -1048,10 +1269,13 @@ public sealed class Renderer
         AddRegion(regions, r, winX, winY, interactive, onClick);
     }
 
-    private static void AddRegion(List<HitRegion> regions, SKRect localRect, float winX, float winY,
+    private void AddRegion(List<HitRegion> regions, SKRect localRect, float winX, float winY,
         bool interactive, Action onClick)
     {
         if (!interactive) return;
+        // Drop regions scrolled out of the active clip band (settings list).
+        if (_regionClip is { } clip && (localRect.MidY < clip.Top || localRect.MidY > clip.Bottom))
+            return;
         regions.Add(new HitRegion
         {
             Rect = new SKRect(localRect.Left, localRect.Top, localRect.Right, localRect.Bottom),

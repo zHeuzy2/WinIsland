@@ -31,6 +31,10 @@ internal sealed class IslandApp : IIslandActions
     private NotificationService _notifications = null!;
     private CameraService _camera = null!;
     private UpdateService _updates = null!;
+    private SystemHudService _hud = null!;
+    private BatteryService _battery = null!;
+    private ConnectivityService _connectivity = null!;
+    private WeatherService _weather = null!;
 
     // GitHub update state. _pendingUpdate is set from a background task and read
     // on the UI thread when building the tray menu; _updating guards against
@@ -44,6 +48,19 @@ internal sealed class IslandApp : IIslandActions
 
     private readonly List<HitRegion> _regions = new();
     private HitRegion? _drag;
+
+    // Software double-click detection for "pin via double-click on empty area".
+    // The window class isn't registered with CS_DBLCLKS, so we track the last
+    // click ourselves. _lastEmptyClickTicks == 0 means "no pending first click".
+    private long _lastEmptyClickTicks;
+    private float _lastEmptyClickX, _lastEmptyClickY;
+    private const long DoubleClickTicks = 400 * TimeSpan.TicksPerMillisecond;
+    private const float DoubleClickSlopPx = 6f;
+
+    // Auto-collapse a click-expanded panel after a few idle seconds. The timer
+    // is paused while the cursor is over the panel; 0 means "not armed".
+    private long _clickIdleSinceTicks;
+    private const long ClickIdleTicks = 5000 * TimeSpan.TicksPerMillisecond;
     private volatile bool _needsRender = true;
     private float _pillL, _pillT, _pillR, _pillB;
     private WndProc _wndProcDelegate = null!;
@@ -52,6 +69,20 @@ internal sealed class IslandApp : IIslandActions
     // open so we can capture typing without the (NOACTIVATE) island taking focus.
     private IntPtr _kbHook;
     private HookProc? _kbProc;
+
+    // Low-level mouse hook, installed only while the island is click-expanded (and
+    // not pinned) so a click anywhere outside the pill collapses it again.
+    //
+    // A WH_MOUSE_LL hook is dispatched on the thread that installed it, and the OS
+    // stalls EVERY system mouse event until that thread services the callback. The
+    // render thread sleeps 16ms per frame and renders while expanded, which would
+    // make the whole cursor lag. So we host the hook on a dedicated thread whose
+    // only job is to pump messages, keeping it responsive in microseconds.
+    private IntPtr _mouseHook;
+    private HookProc? _mouseProc;
+    private Thread? _mouseHookThread;
+    private uint _mouseHookThreadId;
+    private bool _mouseHookWanted;
 
     // System tray icon (right-click to quit). Kept as a field so we can remove
     // it on shutdown.
@@ -99,6 +130,10 @@ internal sealed class IslandApp : IIslandActions
         _notifications = new NotificationService(_state, notify);
         _camera = new CameraService(_state, notify);
         _updates = new UpdateService();
+        _hud = new SystemHudService(_state, notify);
+        _battery = new BatteryService(_state, notify);
+        _connectivity = new ConnectivityService(_state, notify);
+        _weather = new WeatherService(_state, notify);
 
         BuildSurface();
         ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
@@ -107,12 +142,24 @@ internal sealed class IslandApp : IIslandActions
 
         _media.Start();
         _notifications.Start();
+        _hud.Start();
+        _battery.Start();
+        _connectivity.Start();
+        _weather.Start();
+
+        // Keep the Run-key registration in sync with the persisted preference
+        // (e.g. if the exe moved since last launch).
+        SyncStartupRegistration();
 
         // Look for a newer GitHub release shortly after launch, without blocking
         // startup. A hit shows an alert and enables the tray "Install" item.
         _ = CheckForUpdatesAsync(announce: true);
 
         RunLoop();
+
+        // Tear down the mouse-hook thread (if it was ever spun up).
+        if (_mouseHookThreadId != 0)
+            PostThreadMessage(_mouseHookThreadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
 
         RemoveTrayIcon();
     }
@@ -311,7 +358,8 @@ internal sealed class IslandApp : IIslandActions
 
     private (float w, float h) TargetSize()
     {
-        if (_state.Hovered || _state.Composer.Active)
+        bool expanded = _state.IsExpanded(_state.Settings.ExpandMode);
+        if (expanded || _state.Composer.Active)
         {
             if (_state.Composer.Active) return (360 * _scale, 300 * _scale);
             return _state.View switch
@@ -320,7 +368,7 @@ internal sealed class IslandApp : IIslandActions
                 ViewKind.Camera => (360 * _scale, 236 * _scale),
                 ViewKind.Music => (360 * _scale, 172 * _scale),
                 ViewKind.Tasks => (340 * _scale, 250 * _scale),
-                ViewKind.Settings => (360 * _scale, 312 * _scale),
+                ViewKind.Settings => (360 * _scale, 316 * _scale),
                 _ => (360 * _scale, 150 * _scale),
             };
         }
@@ -358,7 +406,7 @@ internal sealed class IslandApp : IIslandActions
 
             var (tw, th) = TargetSize();
             _sw.Target = tw; _sh.Target = th;
-            bool expanded = _state.Hovered || _state.Composer.Active;
+            bool expanded = _state.IsExpanded(_state.Settings.ExpandMode);
             _sExp.Target = expanded ? 1 : 0;
 
             // Install/remove the keyboard hook to match the composer's lifetime.
@@ -366,15 +414,46 @@ internal sealed class IslandApp : IIslandActions
             if (_state.Composer.Active && _kbHook == IntPtr.Zero) InstallKeyboardHook();
             else if (!_state.Composer.Active && _kbHook != IntPtr.Zero) RemoveKeyboardHook();
 
+            // In click mode, a global mouse hook lets a click outside the pill
+            // collapse the island. Only needed while click-expanded and unpinned.
+            // The hook lives on its own thread, so we drive it by a wanted flag
+            // rather than reading _mouseHook (which that thread owns).
+            bool wantMouseHook = _state.Settings.ExpandMode == ExpandMode.Click
+                && _state.ClickExpanded && !_state.Pinned;
+            if (wantMouseHook && !_mouseHookWanted) InstallMouseHook();
+            else if (!wantMouseHook && _mouseHookWanted) RemoveMouseHook();
+
+            // Auto-collapse a click-expanded panel after it sits idle. Paused
+            // while the cursor is over the panel; pinned/composer keep it open.
+            bool clickIdleEligible = _state.Settings.ExpandMode == ExpandMode.Click
+                && _state.ClickExpanded && !_state.Pinned && !_state.Composer.Active;
+            if (clickIdleEligible && !_state.Hovered)
+            {
+                long nowTicks = DateTime.UtcNow.Ticks;
+                if (_clickIdleSinceTicks == 0) _clickIdleSinceTicks = nowTicks;
+                else if (nowTicks - _clickIdleSinceTicks >= ClickIdleTicks)
+                {
+                    _state.ClickExpanded = false;
+                    _clickIdleSinceTicks = 0;
+                    _needsRender = true;
+                    UpdateCamera();
+                }
+            }
+            else
+            {
+                _clickIdleSinceTicks = 0;
+            }
+
             bool anim = false;
             anim |= _sw.Step(dt);
             anim |= _sh.Step(dt);
             anim |= _sExp.Step(dt);
 
             bool alertActive = _state.GetActiveAlert() != null;
-            bool eqLive = _state.Media.IsPlaying && !_state.Hovered;
-            bool cameraLive = _state.Hovered && _state.View == ViewKind.Camera;
-            bool live = anim || alertActive || expanded || eqLive || cameraLive;
+            bool eqLive = _state.Media.IsPlaying && !expanded;
+            bool cameraLive = expanded && _state.View == ViewKind.Camera;
+            bool pinToastActive = _state.PinToastActive;
+            bool live = anim || alertActive || expanded || eqLive || cameraLive || pinToastActive;
 
             if (anim || _needsRender || live)
             {
@@ -408,10 +487,12 @@ internal sealed class IslandApp : IIslandActions
                     _needsRender = true;
                     return IntPtr.Zero;
                 }
+                // Hover only drives expansion in Hover mode. We still track the
+                // hovered flag (cheap) but it has no effect on size in Click mode.
                 if (!_state.Hovered)
                 {
                     _state.Hovered = true;
-                    _needsRender = true;
+                    if (_state.Settings.ExpandMode == ExpandMode.Hover) _needsRender = true;
                     var tme = new TRACKMOUSEEVENT
                     {
                         cbSize = (uint)Marshal.SizeOf<TRACKMOUSEEVENT>(),
@@ -430,17 +511,42 @@ internal sealed class IslandApp : IIslandActions
                 UpdateCamera();
                 return IntPtr.Zero;
 
+            case WM_MOUSEWHEEL:
+                // Scroll the settings list when expanded on the Settings view.
+                if (_state.View == ViewKind.Settings
+                    && _state.IsExpanded(_state.Settings.ExpandMode))
+                {
+                    int delta = HiWord(wParam); // multiples of 120
+                    ScrollSettings(-delta / 120f * 32f * _scale);
+                    return IntPtr.Zero;
+                }
+                return IntPtr.Zero;
+
             case WM_LBUTTONDOWN:
             {
                 float lx = LoWord(lParam);
                 float ly = HiWord(lParam);
+
+                // Click mode: clicking the collapsed pill expands it. (This message
+                // only arrives when the cursor is over the pill, via WM_NCHITTEST.)
+                if (_state.Settings.ExpandMode == ExpandMode.Click
+                    && !_state.IsExpanded(_state.Settings.ExpandMode))
+                {
+                    _state.ClickExpanded = true;
+                    _needsRender = true;
+                    UpdateCamera();
+                    return IntPtr.Zero;
+                }
+
                 // Iterate a copy to avoid races with the render thread rebuild.
                 HitRegion[] snapshot;
                 lock (_regions) snapshot = _regions.ToArray();
+                bool hitRegion = false;
                 foreach (var r in snapshot)
                 {
                     if (lx >= r.Rect.Left && lx <= r.Rect.Right && ly >= r.Rect.Top && ly <= r.Rect.Bottom)
                     {
+                        hitRegion = true;
                         if (r.OnDrag != null || r.OnDragCommit != null)
                         {
                             // Draggable region (seek bar): capture the mouse so we
@@ -456,6 +562,32 @@ internal sealed class IslandApp : IIslandActions
                         _needsRender = true;
                         break;
                     }
+                }
+
+                // Double-click on an empty area (no control hit) toggles pin. The
+                // second click of a double-click over a button lands on a region,
+                // so this never fires for controls.
+                if (!hitRegion)
+                {
+                    long now = DateTime.UtcNow.Ticks;
+                    if (_lastEmptyClickTicks != 0
+                        && now - _lastEmptyClickTicks <= DoubleClickTicks
+                        && Math.Abs(lx - _lastEmptyClickX) <= DoubleClickSlopPx
+                        && Math.Abs(ly - _lastEmptyClickY) <= DoubleClickSlopPx)
+                    {
+                        TogglePin();
+                        _lastEmptyClickTicks = 0; // avoid a triple-click re-trigger
+                    }
+                    else
+                    {
+                        _lastEmptyClickTicks = now;
+                        _lastEmptyClickX = lx;
+                        _lastEmptyClickY = ly;
+                    }
+                }
+                else
+                {
+                    _lastEmptyClickTicks = 0;
                 }
                 return IntPtr.Zero;
             }
@@ -737,6 +869,82 @@ internal sealed class IslandApp : IIslandActions
     public void ComposerAdjustHour(int delta) { _state.Composer.AdjustHour(delta); _needsRender = true; }
     public void ComposerAdjustMinute(int delta) { _state.Composer.AdjustMinute(delta); _needsRender = true; }
 
+    public void SetExpandMode(ExpandMode mode)
+    {
+        _state.Settings.ExpandMode = mode;
+        // Keep the island open right after switching so the setting stays usable;
+        // in hover mode the cursor is already over it, in click mode pin the open.
+        _state.ClickExpanded = true;
+        _state.Settings.Save();
+        _needsRender = true;
+    }
+
+    public void SetStartWithWindows(bool enabled)
+    {
+        _state.Settings.StartWithWindows = enabled;
+        _state.Settings.Save();
+        ApplyStartupRegistration(enabled);
+        _needsRender = true;
+    }
+
+    public void ToggleAlert(AlertKind kind)
+    {
+        var s = _state.Settings;
+        switch (kind)
+        {
+            case AlertKind.Volume: s.AlertVolume = !s.AlertVolume; break;
+            case AlertKind.Brightness: s.AlertBrightness = !s.AlertBrightness; break;
+            case AlertKind.Battery: s.AlertBattery = !s.AlertBattery; break;
+            case AlertKind.Connection: s.AlertConnection = !s.AlertConnection; break;
+        }
+        s.Save();
+        _needsRender = true;
+    }
+
+    public void TogglePin()
+    {
+        _state.Pinned = !_state.Pinned;
+        // Pinning implies the panel is open; unpinning leaves it open until the
+        // next collapse trigger (mouse leave / click outside).
+        if (_state.Pinned) _state.ClickExpanded = true;
+        // Brief floating toast confirming the new state.
+        _state.ShowPinToast(_state.Pinned, 1400);
+        _needsRender = true;
+    }
+
+    public void ScrollSettings(float delta)
+    {
+        float max = _renderer.SettingsMaxScroll;
+        _state.SettingsScroll = Math.Clamp(_state.SettingsScroll + delta, 0f, max);
+        _needsRender = true;
+    }
+
+    // ---- start-with-Windows registration ----
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunValueName = "WinIsland";
+
+    /// <summary>Re-applies the persisted startup preference to the HKCU Run key.</summary>
+    private void SyncStartupRegistration() => ApplyStartupRegistration(_state.Settings.StartWithWindows);
+
+    private static void ApplyStartupRegistration(bool enabled)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+            if (key == null) return;
+            if (enabled)
+            {
+                string exe = Environment.ProcessPath ?? "";
+                if (exe.Length > 0) key.SetValue(RunValueName, "\"" + exe + "\"");
+            }
+            else
+            {
+                key.DeleteValue(RunValueName, throwOnMissingValue: false);
+            }
+        }
+        catch { /* registry access can fail under lockdown policies; non-fatal */ }
+    }
+
     // ---- inline keyboard capture ----
     private void InstallKeyboardHook()
     {
@@ -751,6 +959,108 @@ internal sealed class IslandApp : IIslandActions
         UnhookWindowsHookEx(_kbHook);
         _kbHook = IntPtr.Zero;
         _kbProc = null;
+    }
+
+    // ---- click-outside-to-collapse (click expand mode) ----
+    //
+    // The hook is installed and serviced on a dedicated thread that does nothing
+    // but pump messages. This keeps WH_MOUSE_LL dispatch instant so it never
+    // throttles system-wide cursor movement, even while the render thread is busy
+    // animating the expanded panel.
+    private void InstallMouseHook()
+    {
+        _mouseHookWanted = true;
+
+        // Lazily spin up the hook thread on first use; it lives until shutdown.
+        if (_mouseHookThread == null)
+        {
+            using var ready = new ManualResetEventSlim(false);
+            _mouseHookThread = new Thread(() => MouseHookThreadProc(ready))
+            {
+                IsBackground = true,
+                Name = "WinIsland.MouseHook",
+            };
+            _mouseHookThread.Start();
+            ready.Wait(); // wait until the thread message queue exists
+        }
+
+        // Ask the hook thread to set the hook (SetWindowsHookEx must run there).
+        if (_mouseHookThreadId != 0)
+            PostThreadMessage(_mouseHookThreadId, WM_HOOK_INSTALL, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    private void RemoveMouseHook()
+    {
+        _mouseHookWanted = false;
+        if (_mouseHookThreadId != 0)
+            PostThreadMessage(_mouseHookThreadId, WM_HOOK_REMOVE, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    /// <summary>
+    /// Dedicated thread body: owns the WH_MOUSE_LL hook and pumps a message loop so
+    /// the hook callback is serviced immediately. Install/remove are driven by
+    /// WM_HOOK_INSTALL / WM_HOOK_REMOVE posted from the render thread.
+    /// </summary>
+    private void MouseHookThreadProc(ManualResetEventSlim ready)
+    {
+        _mouseProc = MouseHook;
+        _mouseHookThreadId = GetCurrentThreadId();
+
+        // Force the thread to create its message queue before anyone posts to it.
+        PeekMessage(out _, IntPtr.Zero, WM_USER, WM_USER, PM_NOREMOVE);
+        ready.Set();
+
+        while (GetMessage(out MSG msg, IntPtr.Zero, 0, 0))
+        {
+            if (msg.message == WM_HOOK_INSTALL)
+            {
+                if (_mouseHook == IntPtr.Zero)
+                    _mouseHook = SetWindowsHookEx(WH_MOUSE_LL, _mouseProc!, GetModuleHandle(null), 0);
+            }
+            else if (msg.message == WM_HOOK_REMOVE)
+            {
+                if (_mouseHook != IntPtr.Zero)
+                {
+                    UnhookWindowsHookEx(_mouseHook);
+                    _mouseHook = IntPtr.Zero;
+                }
+            }
+            else if (msg.message == WM_QUIT)
+            {
+                break;
+            }
+        }
+
+        if (_mouseHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+        }
+    }
+
+    private IntPtr MouseHook(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0 && (uint)wParam == WM_LBUTTONDOWN
+            && _state.Settings.ExpandMode == ExpandMode.Click
+            && _state.ClickExpanded && !_state.Pinned)
+        {
+            var ms = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+            // Coordinates are screen-space; the pill lives at (_winX,_winY) with
+            // the rounded body offset inside the layered window.
+            float lx = ms.pt.X - _winX;
+            float ly = ms.pt.Y - _winY;
+            bool insidePill = lx >= _pillL && lx <= _pillR && ly >= _pillT && ly <= _pillB;
+            if (!insidePill)
+            {
+                // Collapse on the next loop turn. Don't swallow the click so the
+                // user's click still lands on whatever is underneath.
+                _state.ClickExpanded = false;
+                _needsRender = true;
+                PostMessage(_hwnd, WM_APP_UPDATE, IntPtr.Zero, IntPtr.Zero);
+                UpdateCamera();
+            }
+        }
+        return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
     }
 
     private IntPtr KeyboardHook(int nCode, IntPtr wParam, IntPtr lParam)
@@ -897,7 +1207,8 @@ internal sealed class IslandApp : IIslandActions
 
     private void UpdateCamera()
     {
-        bool active = _state.Hovered && _state.View == ViewKind.Camera;
+        bool active = _state.IsExpanded(_state.Settings.ExpandMode)
+            && _state.View == ViewKind.Camera;
         _camera.SetActive(active);
     }
 }

@@ -81,6 +81,20 @@ internal static class Native
         public IntPtr dwExtraInfo;
     }
 
+    // ---- low-level mouse hook (click-to-expand / click-outside-to-collapse) ----
+    public const int WH_MOUSE_LL = 14;
+    public const uint WM_MOUSEWHEEL = 0x020A;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSLLHOOKSTRUCT
+    {
+        public POINT pt;
+        public uint mouseData;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
     public const int HTTRANSPARENT = -1;
     public const int HTCLIENT = 1;
 
@@ -90,6 +104,8 @@ internal static class Native
     public const int SM_CYSCREEN = 1;
 
     public const uint PM_REMOVE = 0x0001;
+    public const uint PM_NOREMOVE = 0x0000;
+    public const uint WM_USER = 0x0400;
     public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new(-4);
 
     public const uint QS_ALLINPUT = 0x04FF;
@@ -104,6 +120,11 @@ internal static class Native
     // Posted by the updater (from a background task) to ask the UI thread to
     // tear the window down and quit so the installer can replace the files.
     public const uint WM_APP_QUIT = 0x8000 + 3; // WM_APP + 3
+
+    // Posted to the dedicated low-level mouse hook thread to (un)install the hook
+    // without blocking it on the render loop. See InstallMouseHook in Program.cs.
+    public const uint WM_HOOK_INSTALL = 0x8000 + 4; // WM_APP + 4
+    public const uint WM_HOOK_REMOVE = 0x8000 + 5;  // WM_APP + 5
 
     public const uint WM_NULL = 0x0000;
     public const uint WM_RBUTTONUP = 0x0205;
@@ -249,6 +270,12 @@ internal static class Native
 
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool PostThreadMessage(uint idThread, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     public static extern bool GetCursorPos(out POINT lpPoint);

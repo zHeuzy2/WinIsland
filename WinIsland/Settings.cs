@@ -5,6 +5,12 @@ namespace WinIsland;
 
 public enum AppLanguage { Portuguese, English }
 
+/// <summary>How the island expands: on hover (legacy) or on click.</summary>
+public enum ExpandMode { Click, Hover }
+
+/// <summary>Categories of system alert that can be silenced individually.</summary>
+public enum AlertKind { Volume, Brightness, Battery, Connection }
+
 /// <summary>A single checklist entry, persisted with the rest of the settings.</summary>
 public sealed class TaskItem
 {
@@ -39,6 +45,14 @@ public sealed class AppSettings
 {
     public IslandSide Position { get; set; } = IslandSide.Center;
     public AppLanguage Language { get; set; } = AppLanguage.Portuguese;
+    public ExpandMode ExpandMode { get; set; } = ExpandMode.Click;
+    public bool StartWithWindows { get; set; } = false;
+
+    // Alert toggles — each can be silenced individually.
+    public bool AlertVolume { get; set; } = true;
+    public bool AlertBrightness { get; set; } = true;
+    public bool AlertBattery { get; set; } = true;
+    public bool AlertConnection { get; set; } = true;
 
     /// <summary>Theme accent (ARGB). Drives chips, music progress and accent text.</summary>
     public int AccentArgb { get; set; } = unchecked((int)0xFF0A84FF);
@@ -149,6 +163,31 @@ public static class Loc
         ["settings.accent"] = "Cor de destaque",
         ["settings.tabs"] = "Abas visíveis",
         ["settings.testnotif"] = "Testar notificação",
+        ["settings.expandmode"] = "Expandir ao",
+        ["settings.startup"] = "Iniciar com o Windows",
+        ["settings.alerts"] = "Alertas ativos",
+        ["expandmode.Click"] = "Clique",
+        ["expandmode.Hover"] = "Hover",
+        ["common.on"] = "Ligado",
+        ["common.off"] = "Desligado",
+        ["alert.volume"] = "Volume",
+        ["alert.brightness"] = "Brilho",
+        ["alert.battery"] = "Bateria",
+        ["alert.connection"] = "Conexão",
+        ["pin.toast.on"] = "Modo fixo",
+        ["pin.toast.off"] = "Modo fixo desativado",
+        ["hud.volume"] = "Volume",
+        ["hud.brightness"] = "Brilho",
+        ["hud.muted"] = "Mudo",
+        ["battery.charging"] = "Carregando",
+        ["battery.low"] = "Bateria fraca",
+        ["battery.critical"] = "Bateria crítica",
+        ["battery.full"] = "Carregamento completo",
+        ["battery.unplugged"] = "Desconectado da tomada",
+        ["wifi.connected"] = "Wi-Fi conectado",
+        ["wifi.disconnected"] = "Wi-Fi desconectado",
+        ["bt.connected"] = "Conectado",
+        ["bt.disconnected"] = "Desconectado",
         ["test.title"] = "Notificação de teste",
         ["test.subtitle"] = "É assim que aparece na ilha",
         ["tasks.empty"] = "Toque em + para adicionar uma tarefa",
@@ -203,6 +242,31 @@ public static class Loc
         ["settings.accent"] = "Accent color",
         ["settings.tabs"] = "Visible tabs",
         ["settings.testnotif"] = "Test notification",
+        ["settings.expandmode"] = "Expand on",
+        ["settings.startup"] = "Start with Windows",
+        ["settings.alerts"] = "Active alerts",
+        ["expandmode.Click"] = "Click",
+        ["expandmode.Hover"] = "Hover",
+        ["common.on"] = "On",
+        ["common.off"] = "Off",
+        ["alert.volume"] = "Volume",
+        ["alert.brightness"] = "Brightness",
+        ["alert.battery"] = "Battery",
+        ["alert.connection"] = "Connection",
+        ["pin.toast.on"] = "Pinned",
+        ["pin.toast.off"] = "Unpinned",
+        ["hud.volume"] = "Volume",
+        ["hud.brightness"] = "Brightness",
+        ["hud.muted"] = "Muted",
+        ["battery.charging"] = "Charging",
+        ["battery.low"] = "Low battery",
+        ["battery.critical"] = "Critical battery",
+        ["battery.full"] = "Fully charged",
+        ["battery.unplugged"] = "Unplugged",
+        ["wifi.connected"] = "Wi-Fi connected",
+        ["wifi.disconnected"] = "Wi-Fi disconnected",
+        ["bt.connected"] = "Connected",
+        ["bt.disconnected"] = "Disconnected",
         ["test.title"] = "Test notification",
         ["test.subtitle"] = "This is how it shows on the island",
         ["tasks.empty"] = "Tap + to add a task",

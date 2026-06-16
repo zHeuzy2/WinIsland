@@ -17,6 +17,7 @@
   <ItemGroup>
     <PackageReference Include="SkiaSharp" Version="2.88.*" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.*" />
+    <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

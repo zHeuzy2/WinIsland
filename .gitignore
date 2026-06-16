@@ -47,3 +47,6 @@ $RECYCLE.BIN/
 *.cache
 TestResults/
 .kiro/
+WinIsland/docs/superpowers/specs/2026-06-16-auto-fechar-e-progresso-idle-design.md
+WinIsland/docs/superpowers/specs/2026-06-16-clima-no-idle-design.md
+WinIsland/docs/superpowers/specs/2026-06-16-fixar-por-duplo-clique-design.md

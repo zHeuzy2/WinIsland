@@ -14,13 +14,27 @@ no WinForms/WPF), with GPU rendering and a focus on being lightweight.
 
 - 🎵 **Music** — controls the active system media session (Spotify, browsers,
   etc.) via GSMTC: play/pause, previous/next track, a scrubbable progress bar
-  with seeking, and album art.
+  with seeking, and album art. When collapsed, a thin progress line on the bottom
+  edge shows how far along the current track is.
+- 🌤️ **Weather at a glance** — when idle, the pill shows the current weather icon
+  and temperature next to the clock, using your approximate location. No API key
+  or sign-up required.
 - ⏱️ **Pomodoro timer** — Focus, Break and Long Break presets.
 - 📷 **Camera** — a live webcam preview right inside the island.
 - ✅ **Tasks** — a checklist with due date and time, editable inline.
 - 🔔 **Notifications** — mirrors Windows toast notifications on the island.
+- 🔊 **Volume & brightness HUD** — a macOS-style overlay when you change the
+  system volume or screen brightness.
+- 🔋 **Battery alerts** — charger connected/disconnected, low and critical
+  battery warnings (laptops only).
+- 📶 **Connectivity alerts** — Wi-Fi connect/disconnect (with SSID) and Bluetooth
+  device connect/disconnect.
+- 📌 **Pin mode** — double-click an empty area of the expanded panel to keep it
+  open (a brief toast confirms it); double-click again to unpin. Otherwise a
+  click-expanded panel auto-collapses after a few idle seconds.
 - 🎨 **Customization** — screen position (left/center/right), accent color,
-  language (Portuguese/English), and which tabs are visible.
+  language (Portuguese/English), which tabs are visible, and toggles to silence
+  individual system alerts.
 - 🖱️ **Tray icon** — a system tray icon with a right-click menu to quit the app.
 - ⬆️ **Auto-update** — checks GitHub Releases on launch and installs new versions
   from the tray icon.
@@ -90,7 +104,7 @@ To quit the app, right-click the WinIsland icon in the system tray and choose
 | `Composer.cs` | Inline task editor |
 | `Spring.cs` | Damped-spring integrator for animations |
 | `Native.cs` | Win32 P/Invoke declarations |
-| `Services/` | Media, camera, notifications and timer |
+| `Services/` | Media, camera, notifications, timer, weather, battery, connectivity and the volume/brightness HUD |
 
 Settings are stored in `%AppData%\WinIsland\settings.json`.
 
@@ -99,6 +113,10 @@ Settings are stored in `%AppData%\WinIsland\settings.json`.
 - **Camera**: requires camera access permission in Windows settings.
 - **Notifications**: requires *UserNotificationListener* permission. Without it,
   music and timer alerts still work normally.
+- **Weather**: makes two background network requests — IP-based geolocation
+  (`ip-api.com`) and the forecast (`open-meteo.com`). Both are free and need no
+  API key. No other telemetry is collected; if you're offline the pill simply
+  shows the clock.
 
 ## 🛠️ Built with
 
